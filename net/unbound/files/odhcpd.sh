@@ -30,6 +30,17 @@ UB_ODHCPD_BLANK=
 
 ##############################################################################
 
+combine_data_ptr() {
+## combines local-data and local-data-ptr lines with $'\034' as a separator
+    while read -r line; do
+        if echo "$line" | grep -q 'PTR'; then
+            printf '%s\n' "$line"
+        else
+            printf '%s\034' "$line"  # \034 is octal for FS (field separator)
+        fi
+    done
+}
+
 odhcpd_zonedata() {
   . /lib/functions.sh
   . /usr/lib/unbound/defaults.sh
@@ -52,6 +63,7 @@ odhcpd_zonedata() {
     local dns_ls_del=$UB_VARDIR/dhcp_dns.del
     local dns_ls_new=$UB_VARDIR/dhcp_dns.new
     local dns_ls_old=$UB_VARDIR/dhcp_dns.old
+    local dns_ls_com=${UB_VARDIR}/dhcp_dns.common
     local dhcp_ls_new=$UB_VARDIR/dhcp_lease.new
 
     if [ ! -f $UB_DHCP_CONF ] || [ ! -f $dns_ls_old ] ; then
@@ -100,12 +112,19 @@ odhcpd_zonedata() {
           -v bisolt=0 -v bconf=1 -v exclude_ipv6_ga=$exclude_ipv6_ga \
           -f /usr/lib/unbound/odhcpd.awk $dhcp_ls_new
 
-      awk '{ print $1 }' $dns_ls_old | sort | uniq > $dns_ls_del
-      cp $dns_ls_new $dns_ls_add
+      awk '{ print $1 }' $dns_ls_old | sort | uniq > ${dns_ls_del}.0
+      cp $dns_ls_new ${dns_ls_add}.0
       cp $dns_ls_new $dns_ls_old
-      cat $dns_ls_del | $UB_CONTROL_CFG local_datas_remove
-      cat $dns_ls_add | $UB_CONTROL_CFG local_datas
-      rm -f $dns_ls_new $dns_ls_del $dns_ls_add $dhcp_ls_new
+
+      # determine common elements and filter them out of the _add and _del lists
+      cat ${dns_ls_add}.0 ${dns_ls_del}.0 | combine_data_ptr | sort | uniq -d >$dns_ls_com
+      combine_data_ptr <${dns_ls_del}.0 | grep -vF --file=$dns_ls_com | sed -E 's/'$'\034''/\n/g; s/^ //' >$dns_ls_del
+      combine_data_ptr <${dns_ls_add}.0 | grep -vF --file=$dns_ls_com | sed -E 's/'$'\034''/\n/g; s/^ //' >$dns_ls_add
+
+      # only add/remove dhcp changes
+      [ -s $dns_ls_del ] && cat $dns_ls_del | $UB_CONTROL_CFG local_datas_remove
+      [ -s $dns_ls_add ] && cat $dns_ls_add | $UB_CONTROL_CFG local_datas
+      rm -f $dns_ls_new $dns_ls_del $dns_ls_add $dhcp_ls_new ${dns_ls_add}.0 ${dns_ls_del}.0 $dns_ls_com
       ;;
 
     increment)
@@ -139,4 +158,3 @@ if flock -x -n 1000 ; then
 fi
 
 ##############################################################################
-
